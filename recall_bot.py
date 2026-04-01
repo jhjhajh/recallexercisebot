@@ -163,6 +163,8 @@ async def send_reminder(bot: Bot):
     pending = pending_members()
     if not pending:
         return
+
+    # Tag in group
     tags = member_tags(pending)
     await bot.send_message(
         chat_id=session["chat_id"],
@@ -173,6 +175,21 @@ async def send_reminder(bot: Bot):
         ),
         parse_mode="Markdown"
     )
+
+    # DM each non-responder
+    for m in pending:
+        try:
+            await bot.send_message(
+                chat_id=m["user_id"],
+                text=(
+                    "⏰ *RECALL REMINDER*\n\n"
+                    "You have not yet responded to the recall exercise.\n\n"
+                    "Please reply *ACK* or send ✅ in the group chat to confirm you are active."
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception:
+            log.warning("Could not DM reminder to %s (%s).", m["name"], m["user_id"])
 
 # ── Recall commands ───────────────────────────────────────────────────────────
 
@@ -203,7 +220,7 @@ async def cmd_recall(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     tags = member_tags(members)
 
-    # Send the main recall message with everyone tagged
+    # Send the main recall message in the group with everyone tagged
     await update.message.reply_text(
         "🚨 *RECALL EXERCISE INITIATED*\n\n"
         f"Initiated by: {officer.full_name}\n"
@@ -213,6 +230,31 @@ async def cmd_recall(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Please reply *ACK* or send ✅ to confirm you are active.",
         parse_mode="Markdown"
     )
+
+    # DM each member individually for a guaranteed notification
+    dm_failed = []
+    for m in members:
+        try:
+            await ctx.bot.send_message(
+                chat_id=m["user_id"],
+                text=(
+                    "🚨 *RECALL EXERCISE INITIATED*\n\n"
+                    f"Initiated by: {officer.full_name}\n"
+                    f"Time: {now.strftime('%H:%M')} UTC\n\n"
+                    "Please reply *ACK* or send ✅ in the group chat to confirm you are active."
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception:
+            dm_failed.append(m["name"])
+            log.warning("Could not DM %s (%s) — they may not have started the bot.", m["name"], m["user_id"])
+
+    if dm_failed:
+        await update.message.reply_text(
+            "⚠️ Could not DM the following members — they need to send /start to the bot first:\n"
+            + "\n".join(f"• {n}" for n in dm_failed),
+            parse_mode="Markdown"
+        )
 
     job = scheduler.add_job(
         send_reminder,
