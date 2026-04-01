@@ -7,6 +7,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY recall_bot.py .
 
-VOLUME ["/app/data"]
-
 CMD ["python", "recall_bot.py"]
