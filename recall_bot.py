@@ -19,22 +19,42 @@ load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 BOT_TOKEN         = os.environ["BOT_TOKEN"]
-SUPER_ADMIN_ID    = str(os.environ["SUPER_ADMIN_ID"])   # always a string
+SUPER_ADMIN_ID    = str(os.environ["SUPER_ADMIN_ID"])
 REMINDER_INTERVAL = int(os.environ.get("REMINDER_INTERVAL", 15))
 
-# JSON files live in /app/data when containerised, ./data locally
-DATA_DIR     = os.path.join(os.path.dirname(__file__), "data")
+DATA_DIR      = os.path.join(os.path.dirname(__file__), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
-MEMBERS_FILE = os.path.join(DATA_DIR, "members.json")
-ADMINS_FILE  = os.path.join(DATA_DIR, "admins.json")
-
-
+MEMBERS_FILE  = os.path.join(DATA_DIR, "members.json")
+ADMINS_FILE   = os.path.join(DATA_DIR, "admins.json")
+DIRECTORY_FILE = os.path.join(DATA_DIR, "directory.json")
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     level=logging.INFO
 )
 log = logging.getLogger(__name__)
+
+# ── Directory I/O ─────────────────────────────────────────────────────────────
+
+def load_directory() -> dict:
+    if not os.path.exists(DIRECTORY_FILE):
+        return {}
+    with open(DIRECTORY_FILE) as f:
+        return json.load(f)
+
+def save_directory(directory: dict):
+    with open(DIRECTORY_FILE, "w") as f:
+        json.dump(directory, f, indent=2)
+
+def update_directory(user):
+    if user is None or user.is_bot:
+        return
+    directory = load_directory()
+    directory[str(user.id)] = {
+        "name":     user.full_name,
+        "username": f"@{user.username}" if user.username else None
+    }
+    save_directory(directory)
 
 # ── Admin list I/O ────────────────────────────────────────────────────────────
 
@@ -74,7 +94,7 @@ session = {
     "officer_id":   None,
     "officer_name": None,
     "t0":           None,
-    "responses":    {},       # {user_id_str: {"name": str, "ts": datetime}}
+    "responses":    {},
     "reminder_job": None,
 }
 
@@ -97,6 +117,12 @@ def pending_members() -> list[dict]:
 def fmt_duration(seconds: float) -> str:
     m, s = divmod(int(seconds), 60)
     return f"{m}m {s}s" if m else f"{s}s"
+
+def member_tags(members: list[dict]) -> str:
+    """Build clickable @mention tags for a list of members."""
+    return " ".join(
+        f"[{m['name']}](tg://user?id={m['user_id']})" for m in members
+    )
 
 def build_report(closed: datetime) -> str:
     members   = load_members()
@@ -137,9 +163,7 @@ async def send_reminder(bot: Bot):
     pending = pending_members()
     if not pending:
         return
-    tags = " ".join(
-        f"[{m['name']}](tg://user?id={m['user_id']})" for m in pending
-    )
+    tags = member_tags(pending)
     await bot.send_message(
         chat_id=session["chat_id"],
         text=(
@@ -177,12 +201,16 @@ async def cmd_recall(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "responses":    {},
     })
 
+    tags = member_tags(members)
+
+    # Send the main recall message with everyone tagged
     await update.message.reply_text(
         "🚨 *RECALL EXERCISE INITIATED*\n\n"
-        f"All *{len(members)}* members — please reply *ACK* or send ✅ "
-        f"to confirm you are active.\n\n"
         f"Initiated by: {officer.full_name}\n"
-        f"Time: {now.strftime('%H:%M')} UTC",
+        f"Time: {now.strftime('%H:%M')} UTC\n\n"
+        f"The following *{len(members)}* members are required to respond:\n"
+        f"{tags}\n\n"
+        f"Please reply *ACK* or send ✅ to confirm you are active.",
         parse_mode="Markdown"
     )
 
@@ -245,6 +273,8 @@ async def cmd_endrecall(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── Response tracking ─────────────────────────────────────────────────────────
 
 async def track_response(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    update_directory(update.effective_user)
+
     if not session["active"]:
         return
 
@@ -298,7 +328,6 @@ async def cmd_setup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     /setup
     John Doe, 111111111
     Jane Smith, 222222222
-    Bob Tan, 333333333
     """
     if str(update.effective_user.id) != SUPER_ADMIN_ID:
         await update.message.reply_text("⛔ Only the super admin can run /setup.")
@@ -312,7 +341,6 @@ async def cmd_setup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Parse lines after the /setup command
     text  = update.message.text or ""
     lines = [l.strip() for l in text.split("\n")[1:] if l.strip()]
 
@@ -326,8 +354,8 @@ async def cmd_setup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    members  = []
-    errors   = []
+    members = []
+    errors  = []
     for i, line in enumerate(lines, 1):
         parts = [p.strip() for p in line.split(",")]
         if len(parts) != 2 or not parts[0] or not parts[1]:
@@ -552,10 +580,70 @@ async def cmd_listadmins(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── Utility ───────────────────────────────────────────────────────────────────
 
+async def cmd_lookup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if str(update.effective_user.id) != SUPER_ADMIN_ID:
+        await update.message.reply_text("⛔ Only the super admin can use /lookup.")
+        return
+
+    if not ctx.args:
+        await update.message.reply_text(
+            "⚠️ Usage: `/lookup @username` or `/lookup Full Name`",
+            parse_mode="Markdown"
+        )
+        return
+
+    query     = " ".join(ctx.args).lower()
+    directory = load_directory()
+
+    matches = [
+        (uid, data) for uid, data in directory.items()
+        if (data["username"] and query == data["username"].lower()) or
+           query in data["name"].lower()
+    ]
+
+    if not matches:
+        await update.message.reply_text(
+            f"❌ No one matching `{query}` found in directory.\n\n"
+            f"They need to send at least one message in the group first.",
+            parse_mode="Markdown"
+        )
+        return
+
+    lines = [f"🔍 *Lookup results for* `{query}`:\n"]
+    for uid, data in matches:
+        username = data["username"] or "no username"
+        lines.append(f"• {data['name']} ({username}) — ID: `{uid}`")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_directory(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if str(update.effective_user.id) != SUPER_ADMIN_ID:
+        await update.message.reply_text("⛔ Only the super admin can view the directory.")
+        return
+
+    directory = load_directory()
+    if not directory:
+        await update.message.reply_text(
+            "📂 Directory is empty — no one has sent a message in the group yet."
+        )
+        return
+
+    lines = [f"📂 *Directory* ({len(directory)} users seen)\n"]
+    for uid, data in directory.items():
+        username = data["username"] or "no username"
+        lines.append(f"• {data['name']} ({username}) — `{uid}`")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
 async def cmd_myid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
+    username = f"@{u.username}" if u.username else "no username set"
     await update.message.reply_text(
-        f"👤 *{u.full_name}*\nYour Telegram user ID is: `{u.id}`",
+        f"👤 *{u.full_name}* ({username})\n"
+        f"Your Telegram user ID is: `{u.id}`\n\n"
+        f"Give this ID to your admin to be added as a member.",
         parse_mode="Markdown"
     )
 
@@ -587,9 +675,11 @@ def main():
     app.add_handler(CommandHandler("listadmins",    cmd_listadmins))
 
     # Utility
+    app.add_handler(CommandHandler("lookup",        cmd_lookup))
+    app.add_handler(CommandHandler("directory",     cmd_directory))
     app.add_handler(CommandHandler("myid",          cmd_myid))
 
-    # Track acknowledgements
+    # Track acknowledgements + directory
     app.add_handler(MessageHandler(
         filters.TEXT & filters.ChatType.GROUPS,
         track_response
