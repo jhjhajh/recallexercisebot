@@ -19,7 +19,7 @@ load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 BOT_TOKEN         = os.environ["BOT_TOKEN"]
-SUPER_ADMIN_ID    = str(os.environ["SUPER_ADMIN_ID"])
+SUPER_ADMIN_ID    = str(os.environ["SUPER_ADMIN_ID"])   # always a string
 REMINDER_INTERVAL = int(os.environ.get("REMINDER_INTERVAL", 15))
 
 # JSON files live in /app/data when containerised, ./data locally
@@ -49,7 +49,7 @@ def save_admins(admins: list[dict]):
 def is_admin(user_id: str) -> bool:
     if user_id == SUPER_ADMIN_ID:
         return True
-    return any(a["user_id"] == user_id for a in load_admins())
+    return any(str(a["user_id"]) == user_id for a in load_admins())
 
 # ── Member list I/O ───────────────────────────────────────────────────────────
 
@@ -71,7 +71,7 @@ session = {
     "officer_id":   None,
     "officer_name": None,
     "t0":           None,
-    "responses":    {},       # {user_id: {"name": str, "ts": datetime}}
+    "responses":    {},       # {user_id_str: {"name": str, "ts": datetime}}
     "reminder_job": None,
 }
 
@@ -120,7 +120,7 @@ def build_report(closed: datetime) -> str:
         )
 
     if len(responded) < total:
-        pending = [m["name"] for m in members if m["user_id"] not in responded]
+        pending = [m["name"] for m in members if str(m["user_id"]) not in responded]
         lines += ["", "*❌ Did not respond:*"] + [f"• {n}" for n in pending]
 
     return "\n".join(lines)
@@ -168,7 +168,7 @@ async def cmd_recall(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     session.update({
         "active":       True,
         "chat_id":      update.effective_chat.id,
-        "officer_id":   officer.id,
+        "officer_id":   str(officer.id),
         "officer_name": officer.full_name,
         "t0":           now,
         "responses":    {},
@@ -250,11 +250,12 @@ async def track_response(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     members = load_members()
-    member  = next((m for m in members if m["user_id"] == user.id), None)
+    uid_str = str(user.id)
+    member  = next((m for m in members if str(m["user_id"]) == uid_str), None)
     if not member:
         return
 
-    if user.id in session["responses"]:
+    if uid_str in session["responses"]:
         return
 
     msg          = (update.message.text or "").strip().upper()
@@ -263,7 +264,7 @@ async def track_response(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     now = datetime.now(timezone.utc)
-    session["responses"][user.id] = {"name": member["name"], "ts": now}
+    session["responses"][uid_str] = {"name": member["name"], "ts": now}
     elapsed = fmt_duration((now - session["t0"]).total_seconds())
 
     await update.message.reply_text(
@@ -286,7 +287,7 @@ async def track_response(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── Member management commands ────────────────────────────────────────────────
 
 async def cmd_addmember(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    if not is_admin(str(update.effective_user.id)):
         await update.message.reply_text("⛔ You are not authorised to manage members.")
         return
 
@@ -328,11 +329,11 @@ async def cmd_removemember(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    query    = " ".join(ctx.args)
-    members  = load_members()
-    uid_str  = query.strip()
-    # Try matching by user_id string first, then by name
-    by_id    = [m for m in members if str(m["user_id"]) == uid_str]
+    query   = " ".join(ctx.args)
+    members = load_members()
+    uid_str = query.strip()
+    by_id   = [m for m in members if str(m["user_id"]) == uid_str]
+
     if by_id:
         new_list = [m for m in members if str(m["user_id"]) != uid_str]
         removed  = by_id
@@ -367,7 +368,7 @@ async def cmd_renamemember(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    uid     = str(ctx.args[0])
+    uid      = str(ctx.args[0])
     new_name = " ".join(ctx.args[1:])
     members  = load_members()
     member   = next((m for m in members if str(m["user_id"]) == uid), None)
@@ -399,7 +400,7 @@ async def cmd_listmembers(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ── Admin management commands ─────────────────────────────────────────────────
 
 async def cmd_addadmin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    if not is_admin(str(update.effective_user.id)):
         await update.message.reply_text("⛔ Only admins can add other admins.")
         return
 
@@ -411,16 +412,11 @@ async def cmd_addadmin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    try:
-        uid = int(ctx.args[0])
-    except ValueError:
-        await update.message.reply_text("❌ user\\_id must be a number.", parse_mode="Markdown")
-        return
-
+    uid    = str(ctx.args[0])
     name   = " ".join(ctx.args[1:])
     admins = load_admins()
 
-    if uid == SUPER_ADMIN_ID or any(a["user_id"] == uid for a in admins):
+    if uid == SUPER_ADMIN_ID or any(str(a["user_id"]) == uid for a in admins):
         await update.message.reply_text(
             f"ℹ️ User ID `{uid}` is already an admin.", parse_mode="Markdown"
         )
@@ -435,7 +431,7 @@ async def cmd_addadmin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_removeadmin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    if not is_admin(str(update.effective_user.id)):
         await update.message.reply_text("⛔ Only admins can remove other admins.")
         return
 
@@ -445,17 +441,19 @@ async def cmd_removeadmin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    query  = " ".join(ctx.args)
-    admins = load_admins()
+    query   = " ".join(ctx.args)
+    admins  = load_admins()
+    uid_str = query.strip()
 
-    try:
-        uid = int(query)
-        if uid == SUPER_ADMIN_ID:
-            await update.message.reply_text("⛔ The super admin cannot be removed.")
-            return
-        new_list = [a for a in admins if a["user_id"] != uid]
-        removed  = [a for a in admins if a["user_id"] == uid]
-    except ValueError:
+    if uid_str == SUPER_ADMIN_ID:
+        await update.message.reply_text("⛔ The super admin cannot be removed.")
+        return
+
+    by_id = [a for a in admins if str(a["user_id"]) == uid_str]
+    if by_id:
+        new_list = [a for a in admins if str(a["user_id"]) != uid_str]
+        removed  = by_id
+    else:
         q        = query.lower()
         new_list = [a for a in admins if a["name"].lower() != q]
         removed  = [a for a in admins if a["name"].lower() == q]
@@ -476,7 +474,7 @@ async def cmd_removeadmin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_listadmins(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    if not is_admin(str(update.effective_user.id)):
         await update.message.reply_text("⛔ Only admins can view the admin list.")
         return
 
@@ -499,8 +497,12 @@ async def cmd_myid(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+async def post_init(app):
+    scheduler.start()
+    log.info("Scheduler started.")
+
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     # Recall commands
     app.add_handler(CommandHandler("recall",        cmd_recall))
@@ -528,7 +530,6 @@ def main():
         track_response
     ))
 
-    scheduler.start()
     log.info("Bot is running...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
