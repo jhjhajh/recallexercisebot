@@ -19,7 +19,7 @@ load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 BOT_TOKEN         = os.environ["BOT_TOKEN"]
-SUPER_ADMIN_ID    = int(os.environ["SUPER_ADMIN_ID"])
+SUPER_ADMIN_ID    = str(os.environ["SUPER_ADMIN_ID"])
 REMINDER_INTERVAL = int(os.environ.get("REMINDER_INTERVAL", 15))
 
 # JSON files live in /app/data when containerised, ./data locally
@@ -46,7 +46,7 @@ def save_admins(admins: list[dict]):
     with open(ADMINS_FILE, "w") as f:
         json.dump(admins, f, indent=2)
 
-def is_admin(user_id: int) -> bool:
+def is_admin(user_id: str) -> bool:
     if user_id == SUPER_ADMIN_ID:
         return True
     return any(a["user_id"] == user_id for a in load_admins())
@@ -89,7 +89,7 @@ def reset_session():
 def pending_members() -> list[dict]:
     members   = load_members()
     responded = set(session["responses"].keys())
-    return [m for m in members if m["user_id"] not in responded]
+    return [m for m in members if str(m["user_id"]) not in responded]
 
 def fmt_duration(seconds: float) -> str:
     m, s = divmod(int(seconds), 60)
@@ -299,16 +299,11 @@ async def cmd_addmember(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    try:
-        uid = int(ctx.args[0])
-    except ValueError:
-        await update.message.reply_text("❌ user\\_id must be a number.", parse_mode="Markdown")
-        return
-
+    uid     = str(ctx.args[0])
     name    = " ".join(ctx.args[1:])
     members = load_members()
 
-    if any(m["user_id"] == uid for m in members):
+    if any(str(m["user_id"]) == uid for m in members):
         await update.message.reply_text(
             f"ℹ️ User ID `{uid}` is already in the member list.", parse_mode="Markdown"
         )
@@ -323,7 +318,7 @@ async def cmd_addmember(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_removemember(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    if not is_admin(str(update.effective_user.id)):
         await update.message.reply_text("⛔ You are not authorised to manage members.")
         return
 
@@ -333,14 +328,15 @@ async def cmd_removemember(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    query   = " ".join(ctx.args)
-    members = load_members()
-
-    try:
-        uid      = int(query)
-        new_list = [m for m in members if m["user_id"] != uid]
-        removed  = [m for m in members if m["user_id"] == uid]
-    except ValueError:
+    query    = " ".join(ctx.args)
+    members  = load_members()
+    uid_str  = query.strip()
+    # Try matching by user_id string first, then by name
+    by_id    = [m for m in members if str(m["user_id"]) == uid_str]
+    if by_id:
+        new_list = [m for m in members if str(m["user_id"]) != uid_str]
+        removed  = by_id
+    else:
         q        = query.lower()
         new_list = [m for m in members if m["name"].lower() != q]
         removed  = [m for m in members if m["name"].lower() == q]
@@ -361,7 +357,7 @@ async def cmd_removemember(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_renamemember(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    if not is_admin(str(update.effective_user.id)):
         await update.message.reply_text("⛔ You are not authorised to manage members.")
         return
 
@@ -371,15 +367,10 @@ async def cmd_renamemember(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    try:
-        uid = int(ctx.args[0])
-    except ValueError:
-        await update.message.reply_text("❌ First argument must be a numeric user ID.", parse_mode="Markdown")
-        return
-
+    uid     = str(ctx.args[0])
     new_name = " ".join(ctx.args[1:])
     members  = load_members()
-    member   = next((m for m in members if m["user_id"] == uid), None)
+    member   = next((m for m in members if str(m["user_id"]) == uid), None)
 
     if not member:
         await update.message.reply_text(f"❌ No member with ID `{uid}` found.", parse_mode="Markdown")
