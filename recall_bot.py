@@ -28,6 +28,8 @@ os.makedirs(DATA_DIR, exist_ok=True)
 MEMBERS_FILE = os.path.join(DATA_DIR, "members.json")
 ADMINS_FILE  = os.path.join(DATA_DIR, "admins.json")
 
+
+
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     level=logging.INFO
@@ -38,6 +40,7 @@ log = logging.getLogger(__name__)
 
 def load_admins() -> list[dict]:
     if not os.path.exists(ADMINS_FILE):
+        save_admins([])
         return []
     with open(ADMINS_FILE) as f:
         return json.load(f)
@@ -55,7 +58,7 @@ def is_admin(user_id: str) -> bool:
 
 def load_members() -> list[dict]:
     if not os.path.exists(MEMBERS_FILE):
-        log.warning("members.json not found — using empty list.")
+        save_members([])
         return []
     with open(MEMBERS_FILE) as f:
         return json.load(f)
@@ -286,6 +289,67 @@ async def track_response(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ── Member management commands ────────────────────────────────────────────────
 
+async def cmd_setup(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """
+    Bulk load members on first boot. Only works if members.json is empty.
+    Only super admin can run this.
+
+    Usage — send as one message:
+    /setup
+    John Doe, 111111111
+    Jane Smith, 222222222
+    Bob Tan, 333333333
+    """
+    if str(update.effective_user.id) != SUPER_ADMIN_ID:
+        await update.message.reply_text("⛔ Only the super admin can run /setup.")
+        return
+
+    existing = load_members()
+    if existing:
+        await update.message.reply_text(
+            f"⛔ Setup already done — {len(existing)} members already loaded.\n"
+            "Use /addmember or /removemember to make changes."
+        )
+        return
+
+    # Parse lines after the /setup command
+    text  = update.message.text or ""
+    lines = [l.strip() for l in text.split("\n")[1:] if l.strip()]
+
+    if not lines:
+        await update.message.reply_text(
+            "⚠️ No members provided. Send it like this:\n\n"
+            "`/setup`\n"
+            "`John Doe, 111111111`\n"
+            "`Jane Smith, 222222222`",
+            parse_mode="Markdown"
+        )
+        return
+
+    members  = []
+    errors   = []
+    for i, line in enumerate(lines, 1):
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            errors.append(f"Line {i}: `{line}` — expected `Name, user_id`")
+            continue
+        members.append({"name": parts[0], "user_id": parts[1]})
+
+    if errors:
+        await update.message.reply_text(
+            "❌ Some lines had errors:\n" + "\n".join(errors) +
+            "\n\nFix and resend. Nothing was saved.",
+            parse_mode="Markdown"
+        )
+        return
+
+    save_members(members)
+    lines_out = [f"📋 *Setup complete — {len(members)} members loaded:*\n"]
+    for i, m in enumerate(members, 1):
+        lines_out.append(f"{i}. {m['name']} — `{m['user_id']}`")
+    await update.message.reply_text("\n".join(lines_out), parse_mode="Markdown")
+
+
 async def cmd_addmember(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_admin(str(update.effective_user.id)):
         await update.message.reply_text("⛔ You are not authorised to manage members.")
@@ -511,6 +575,7 @@ def main():
     app.add_handler(CommandHandler("endrecall",     cmd_endrecall))
 
     # Member management
+    app.add_handler(CommandHandler("setup",         cmd_setup))
     app.add_handler(CommandHandler("addmember",     cmd_addmember))
     app.add_handler(CommandHandler("removemember",  cmd_removemember))
     app.add_handler(CommandHandler("renamemember",  cmd_renamemember))
